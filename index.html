@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Análise Avançada de Criptomoedas</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; background: #f9fafb; }
+    h1 { color: #1f2937; }
+    select { padding: 10px; font-size: 16px; margin-bottom: 20px; }
+    .suggestion { padding: 15px; margin-top: 20px; border-radius: 8px; font-size: 18px; }
+    .buy { background-color: #d1fae5; color: #065f46; }
+    .sell { background-color: #fee2e2; color: #991b1b; }
+    .hold { background-color: #f3f4f6; color: #4b5563; }
+    canvas { max-width: 100%; height: auto; margin-top: 20px; }
+  </style>
+</head>
+<body>
+  <h1>Análise Técnica de Criptomoedas</h1>
+  <select id="cryptoSelect">
+    <option value="">Selecione uma moeda</option>
+  </select>
+  <canvas id="priceChart" width="800" height="400"></canvas>
+  <div id="recommendation" class="suggestion hold">Nenhuma análise ainda.</div>
+
+  <script>
+    const apiBase = 'https://api.coingecko.com/api/v3';
+    const select = document.getElementById('cryptoSelect');
+    const recommendationDiv = document.getElementById('recommendation');
+    let chart;
+
+    async function fetchTopCryptos() {
+      const res = await fetch(`${apiBase}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=10`);
+      const data = await res.json();
+      data.forEach(coin => {
+        const option = document.createElement('option');
+        option.value = coin.id;
+        option.textContent = coin.name;
+        select.appendChild(option);
+      });
+    }
+
+    async function fetchPriceHistory(coinId) {
+      const res = await fetch(`${apiBase}/coins/${coinId}/market_chart?vs_currency=usd&days=30`);
+      const data = await res.json();
+      return data.prices;
+    }
+
+    function calculateSMA(prices, period) {
+      return prices.map((_, i, arr) => {
+        if (i < period - 1) return null;
+        const slice = arr.slice(i - period + 1, i + 1);
+        const sum = slice.reduce((acc, [, price]) => acc + price, 0);
+        return sum / period;
+      });
+    }
+
+    function calculateEMA(prices, period) {
+      const k = 2 / (period + 1);
+      const emaArray = [];
+      let ema = prices.slice(0, period).reduce((sum, [, p]) => sum + p, 0) / period;
+      emaArray[period - 1] = ema;
+
+      for (let i = period; i < prices.length; i++) {
+        const price = prices[i][1];
+        ema = price * k + ema * (1 - k);
+        emaArray[i] = ema;
+      }
+      return emaArray;
+    }
+
+    function calculateRSI(prices, period = 14) {
+      const gains = [], losses = [];
+      for (let i = 1; i < prices.length; i++) {
+        const change = prices[i][1] - prices[i - 1][1];
+        gains.push(change > 0 ? change : 0);
+        losses.push(change < 0 ? -change : 0);
+      }
+
+      const avgGain = Array(prices.length).fill(null);
+      const avgLoss = Array(prices.length).fill(null);
+      const rsi = Array(prices.length).fill(null);
+
+      avgGain[period] = gains.slice(0, period).reduce((a, b) => a + b, 0) / period;
+      avgLoss[period] = losses.slice(0, period).reduce((a, b) => a + b, 0) / period;
+
+      for (let i = period + 1; i < prices.length; i++) {
+        avgGain[i] = (gains[i - 1] * (1 - 1 / period)) + (avgGain[i - 1] * (1 - 1 / period));
+        avgLoss[i] = (losses[i - 1] * (1 - 1 / period)) + (avgLoss[i - 1] * (1 - 1 / period));
+
+        const rs = avgGain[i] / avgLoss[i];
+        rsi[i] = 100 - (100 / (1 + rs));
+      }
+      return rsi;
+    }
+
+    function calculateMACD(prices) {
+      const ema12 = calculateEMA(prices, 12);
+      const ema26 = calculateEMA(prices, 26);
+      const macd = ema12.map((v, i) => (v !== undefined && ema26[i] !== undefined) ? v - ema26[i] : null);
+      const signal = calculateEMA(macd.map((v, i) => [i, v || 0]), 9);
+      return { macd, signal };
+    }
+
+    function playAlertSound() {
+      const ctx = new AudioContext();
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = 'sine';
+      o.connect(g);
+      g.connect(ctx.destination);
+      o.start();
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 1);
+      o.stop(ctx.currentTime + 1);
+    }
+
+    function renderChart(prices, sma20, rsi, macdData) {
+      const labels = prices.map(([ts]) => new Date(ts).toLocaleDateString());
+      const priceValues = prices.map(([, price]) => price);
+
+      if (chart) chart.destroy();
+      const ctx = document.getElementById('priceChart').getContext('2d');
+
+      chart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [
+            {
+              label: 'Preço (USD)',
+              data: priceValues,
+              borderColor: '#10b981',
+              backgroundColor: 'rgba(16,185,129,0.1)',
+              tension: 0.3,
+            },
+            {
+              label: 'SMA 20',
+              data: sma20,
+              borderColor: '#3b82f6',
+              borderDash: [5, 5],
+              tension: 0.2,
+            },
+            {
+              label: 'RSI',
+              data: rsi,
+              borderColor: '#f59e0b',
+              hidden: true,
+              yAxisID: 'rsi',
+              tension: 0.1,
+            },
+            {
+              label: 'MACD',
+              data: macdData.macd,
+              borderColor: '#8b5cf6',
+              hidden: true,
+              yAxisID: 'macd',
+              tension: 0.1,
+            },
+            {
+              label: 'Signal',
+              data: macdData.signal,
+              borderColor: '#ec4899',
+              borderDash: [3, 3],
+              hidden: true,
+              yAxisID: 'macd',
+              tension: 0.1,
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          scales: {
+            y: { beginAtZero: false },
+            rsi: { position: 'right', display: false },
+            macd: { position: 'right', display: false }
+          }
+        }
+      });
+    }
+
+    function generateRecommendation(prices, rsi, macdData) {
+      const lastPrice = prices.at(-1)[1];
+      const rsiValue = rsi.at(-1);
+      const macd = macdData.macd.at(-1);
+      const signal = macdData.signal.at(-1);
+
+      let msg = 'AGUARDAR';
+      let cssClass = 'hold';
+      let alert = false;
+
+      if (rsiValue > 70) {
+        msg = 'SOBRECOMPRA - VENDER';
+        cssClass = 'sell';
+        alert = true;
+      } else if (rsiValue < 30) {
+        msg = 'SOBREVENDA - COMPRAR';
+        cssClass = 'buy';
+        alert = true;
+      } else if (macd > signal) {
+        msg = 'TENDÊNCIA DE ALTA - COMPRA';
+        cssClass = 'buy';
+      } else if (macd < signal) {
+        msg = 'TENDÊNCIA DE BAIXA - VENDA';
+        cssClass = 'sell';
+      }
+
+      recommendationDiv.textContent = `Recomendação: ${msg}`;
+      recommendationDiv.className = `suggestion ${cssClass}`;
+      if (alert) playAlertSound();
+    }
+
+    select.addEventListener('change', async () => {
+      const coinId = select.value;
+      if (!coinId) return;
+      const prices = await fetchPriceHistory(coinId);
+      const sma20 = calculateSMA(prices, 20);
+      const rsi = calculateRSI(prices);
+      const macdData = calculateMACD(prices);
+      renderChart(prices, sma20, rsi, macdData);
+      generateRecommendation(prices, rsi, macdData);
+    });
+
+    fetchTopCryptos();
+  </script>
+</body>
+</html>
